@@ -21,6 +21,117 @@ import {
   microsoftSignInRoute,
   sendVerificationEmailRoute,
 } from './routes';
+import { getUploadTokenRoute } from '../general/routes';
+import { readJwt } from '../../lib/jwt';
+import { Context } from 'hono';
+import { Cookie } from 'lucia';
+
+const uploadImage = async (ctx: Context, url: string, sessionCookie: Cookie) => {
+  console.log('ctx.res.headers', ctx.res.headers);
+  const res = await fetch(`${config.backendUrl}${getUploadTokenRoute.path}?public=true`, {
+    method: getUploadTokenRoute.method,
+    headers: {
+      Cookie: sessionCookie.serialize(),
+    },
+  });
+
+  const json = await res.json();
+
+  console.log('json', json);
+
+  if ('error' in json) {
+    customLogger('Error getting upload token', { errorMessage: json.error }, 'error');
+    return null;
+  }
+
+  const uploadToken = json.data;
+
+  console.log('uploadToken', uploadToken);
+
+  const imageRes = await fetch(url);
+
+  if (!imageRes.ok || !imageRes.body) {
+    customLogger('Error downloading image', { errorMessage: imageRes.statusText }, 'error');
+    return null;
+  }
+
+  const imageBlob = await imageRes.blob();
+
+  // const buffer = await imageBlob.arrayBuffer();
+  const isPublic = true;
+  const rootUrl = isPublic ? config.publicCDNUrl : config.privateCDNUrl;
+
+  const urlRes = await fetch(config.tusUrl, {
+    method: 'POST',
+    headers: {
+      'Tus-Resumable': '1.0.0',
+      'Upload-Length': String(imageBlob.size),
+      'Upload-Metadata': `public ${Buffer.from(String()).toString('base64')}, filename ${Buffer.from('image.jpg').toString('base64')}, filetype ${Buffer.from(imageBlob.type).toString('base64')}, type ${Buffer.from(imageBlob.type).toString('base64')}, name ${Buffer.from('image.jpg').toString('base64')}`,
+      Authorization: `Bearer ${uploadToken}`,
+    },
+    redirect: 'manual',
+  });
+
+  if (!urlRes.ok) {
+    customLogger('Error getting upload url', { errorMessage: urlRes.statusText }, 'error');
+    return null;
+  }
+
+  const uploadUrl = urlRes.headers.get('Location');
+
+  if (!uploadUrl) {
+    customLogger('Error getting upload url', { errorMessage: 'No upload url' }, 'error');
+    return null;
+  }
+
+  const uploadRes = await fetch(uploadUrl, {
+    method: 'PATCH',
+    headers: {
+      'Tus-Resumable': '1.0.0',
+      Authorization: `Bearer ${uploadToken}`,
+    },
+    body: imageBlob,
+  });
+
+  if (!uploadRes.ok) {
+    customLogger('Error uploading image', { errorMessage: uploadRes.statusText }, 'error');
+    return null;
+  }
+
+  console.log('uploadRes', uploadRes);
+
+  // const file = new File([buffer], 'image.jpg', { type: imageBlob.type });
+
+  // const upload = new tus.Upload(file, {
+  //   endpoint: `${config.tusUrl}/files/`,
+  //   metadata: {
+  //     public: String(isPublic),
+  //     filename: nanoid(),
+  //     filetype: file.type,
+  //   },
+  //   removeFingerprintOnSuccess: true,
+  //   headers: {
+  //     authorization: `Bearer ${uploadToken}`,
+  //   },
+  //   onError: (error) => {
+  //     console.error('Upload failed:', error);
+  //   },
+  //   onSuccess: () => {
+  //     console.info('Upload finished');
+  //   },
+  // })
+
+  // upload.start();
+
+  const { sub } = readJwt(uploadToken);
+
+  console.log('sub', sub);
+
+
+  const uploadKey = uploadUrl.split('/').pop();
+
+  return `${rootUrl}/${sub}/${uploadKey}`;
+}
 
 const app = new CustomHono();
 
@@ -167,7 +278,7 @@ const oauthRoutes = app
         await db
           .update(usersTable)
           .set({
-            thumbnailUrl: existingUser.thumbnailUrl || githubUser.avatar_url,
+            // thumbnailUrl: existingUser.thumbnailUrl || githubUser.avatar_url,
             bio: existingUser.bio || githubUser.bio,
             emailVerified,
             firstName: existingUser.firstName || firstName,
@@ -189,7 +300,22 @@ const oauthRoutes = app
           return ctx.redirect(`${config.frontendUrl}/auth/verify-email`);
         }
 
-        await setSessionCookie(ctx, existingUser.id);
+        const sessionCookie = await setSessionCookie(ctx, existingUser.id);
+
+        let thumbnailUrl = existingUser.thumbnailUrl;
+
+        if (!thumbnailUrl) {
+          thumbnailUrl = await uploadImage(ctx, githubUser.avatar_url, sessionCookie);
+        }
+
+        if (thumbnailUrl) {
+          await db
+            .update(usersTable)
+            .set({
+              thumbnailUrl,
+            })
+            .where(eq(usersTable.id, existingUser.id));
+        }
 
         customLogger('User signed in with GitHub', { user: existingUser.id });
 
@@ -205,7 +331,6 @@ const oauthRoutes = app
         slug: githubUser.login,
         email: primaryEmail.email.toLowerCase(),
         name: githubUser.name,
-        thumbnailUrl: githubUser.avatar_url,
         bio: githubUser.bio,
         emailVerified: primaryEmail.verified,
         language: config.defaultLanguage,
@@ -232,7 +357,18 @@ const oauthRoutes = app
         return ctx.redirect(`${config.frontendUrl}/auth/verify-email`, 302);
       }
 
-      await setSessionCookie(ctx, userId);
+      const sessionCookie = await setSessionCookie(ctx, userId);
+
+      const thumbnailUrl = await uploadImage(ctx, githubUser.avatar_url, sessionCookie);
+
+      if (thumbnailUrl) {
+        await db
+          .update(usersTable)
+          .set({
+            thumbnailUrl,
+          })
+          .where(eq(usersTable.id, userId));
+      }
 
       customLogger('User signed in with GitHub', { user: userId });
 

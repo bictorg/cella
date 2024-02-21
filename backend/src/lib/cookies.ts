@@ -17,6 +17,8 @@ export const setSessionCookie = async (ctx: Context, userId: User['id']) => {
   const sessionCookie = auth.createSessionCookie(session.id);
 
   ctx.header('Set-Cookie', sessionCookie.serialize());
+
+  return sessionCookie;
 };
 
 export const removeSessionCookie = (ctx: Context) => {

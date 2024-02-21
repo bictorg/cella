@@ -1,0 +1,1 @@
+export const readJwt = (token: string) => JSON.parse(atob(token.split('.')[1]));
