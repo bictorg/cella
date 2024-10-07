@@ -5,9 +5,9 @@ import colors from 'picocolors';
 import { downloadTemplate } from "giget";
 import yoctoSpinner from 'yocto-spinner';
 
-import { TEMPLATE_URL} from './constants.js';
+import { TEMPLATE_URL } from './constants.js';
 
-import { install } from './utils/run-package-manager-command.js';
+import { install, generate } from './utils/run-package-manager-command.js';
 import { cleanTemplate } from './utils/clean-template.js';
 import { runGitCommand } from './utils/run-git-command.js';
 
@@ -18,6 +18,7 @@ export async function create({
     skipInstall,
     skipGit,
     skipClean,
+    skipGenerate,
     packageManager,
   }) {
     // Save the original working directory
@@ -86,6 +87,24 @@ export async function create({
       }
     } else {
       console.info(`${colors.yellow('⚠')} --skip-install > Skip installing dependencies`)
+    }
+
+    // Generate SQL files if the skipGenerate flag is not set
+    if (!skipGenerate) {
+      const installSpinner = yoctoSpinner({
+        text: 'generating SQL files',
+      }).start();
+
+      try {
+        await generate(packageManager)
+        installSpinner.success('SQL files generated');
+      } catch (e) {
+        console.error(e);
+        installSpinner.error('Failed to generate SQL files');
+        process.exit(1);
+      }
+    } else {
+      console.info(`${colors.yellow('⚠')} --skip-generate > Skip generating SQL files`)
     }
 
     // Initialize Git repository if skipGit flag is not set
